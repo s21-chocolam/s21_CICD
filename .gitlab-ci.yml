@@ -1,0 +1,101 @@
+stages:
+  - build
+  - style
+  - test
+  - deploy
+
+.notify: &notify
+  - |
+    REMOTE_SERVER="192.10.10.2"
+    REMOTE_USER="chocolam"
+    BOT_TOKEN="7481704453:AAGr8Rd9VfWlZa_FWns8gYlMFs7xZNgt78g"
+    CHAT_ID="584908752"
+    API_URL="https://api.telegram.org/bot${BOT_TOKEN}/sendMessage"
+    MESSAGE=$(if [[ "$CI_JOB_STATUS" =~ "failed" ]]; then echo "$CI_JOB_STAGE stage: !!FAIL!!"; else echo "$CI_JOB_STAGE stage: SUCCESS <3"; fi)
+    ssh "$REMOTE_USER"@"$REMOTE_SERVER" "curl -s -X POST $API_URL -d chat_id=$CHAT_ID -d text=\"$MESSAGE\"" > "/dev/null"
+
+deploy-job:
+  stage: deploy
+  tags:
+    - deploy
+  when: manual
+  script:
+    - scp src/cat/s21_cat chocolam@192.10.10.2:/usr/local/bin
+    - scp src/grep/s21_grep chocolam@192.10.10.2:/usr/local/bin
+    - |
+      output1=$(ssh chocolam@192.10.10.2 "find /usr/local/bin -name s21_cat | grep -o s21_cat")
+      output2=$(ssh chocolam@192.10.10.2 "find /usr/local/bin -name s21_grep | grep -o s21_grep")
+      if ! (echo "$output1" | grep s21_cat && echo "$output2" | grep s21_grep)
+      then
+        echo "Failed to copy files"
+        exit 1
+      fi
+
+      echo "All files copied successfully"
+      exit 0
+  after_script:
+    - *notify
+  only:
+    - develop
+
+test-job:
+  stage: test
+  tags:
+    - test
+  rules:
+    - when: on_success
+  script:
+    - |
+      cd src/cat
+      output1=$(./my_test_cat.sh | grep "FAILED: 0")
+      cd ../grep
+      output2=$(./tests.sh | grep "FAILED: 0")
+      if ! ( echo "$output1" | grep "FAILED: 0" && echo "$output2" | grep "FAILED: 0")
+      then
+          echo "Error: test failed"
+          exit 1
+      fi
+
+      echo "Success: test success"
+      exit 0
+  after_script:
+    - *notify
+
+style-job:
+  stage: style
+  tags:
+    - style
+  script:
+    - |
+      output=$(clang-format -n src/cat/*.c src/cat/*.h src/grep/*.c src/grep/*.h 2>&1)
+      if echo "$output" | grep -qE "(warning|error)"
+      then
+          echo "Error: Errors found in the files"
+          exit 1
+      fi
+
+      echo "Success: No errors found"
+      exit 0
+  after_script:
+    - *notify
+  only:
+    - develop
+
+build-job:
+  stage: build
+  tags:
+    - build
+  script:
+    - cd src/cat
+    - make s21_cat
+    - cd ../grep
+    - make s21_grep
+  after_script:
+    - *notify
+  artifacts:
+    paths:
+      - src/cat/s21_cat
+      - src/grep/s21_grep
+    expire_in: 30 days
+  only:
+    - develop
